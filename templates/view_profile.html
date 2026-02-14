@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ user['name'] }} - Profile</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="apple-touch-icon" href="/static/logo.png">
+    <meta name="theme-color" content="#4a90e2">
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="navbar">
+    <div><strong>{{ user['name'] }}</strong></div>
+    <div>
+        <a href="/chat/{{ user['id'] }}">Message</a>
+        <a href="/dashboard">Back</a>
+    </div>
+</div>
+
+<div class="content">
+
+    {% if profile and profile['profile_pic'] %}
+        <img src="{{ url_for('static', filename='uploads/' + profile['profile_pic']) }}"
+             width="120" style="border-radius:50%;">
+    {% endif %}
+
+    <p><strong>About:</strong> {{ profile['about'] if profile else "Not added" }}</p>
+    <p><strong>Teaches:</strong> {{ profile['skills_teach'] if profile else "Not added" }}</p>
+    <p><strong>Wants to Learn:</strong> {{ profile['skills_learn'] if profile else "Not added" }}</p>
+
+    {% if profile %}
+        <p><a href="{{ profile['linkedin'] }}">LinkedIn</a></p>
+        <p><a href="{{ profile['github'] }}">GitHub</a></p>
+        <p><a href="{{ profile['leetcode'] }}">LeetCode</a></p>
+    {% endif %}
+
+</div>
+
+</body>
+</html>
