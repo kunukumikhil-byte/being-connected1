@@ -1,68 +1,67 @@
 from flask import Flask, render_template, request, redirect, session
 from flask_socketio import SocketIO, emit, join_room
-import sqlite3
+from flask_sqlalchemy import SQLAlchemy
 import os
 
 app = Flask(__name__)
-app.secret_key = "railway_secret_key"
+app.secret_key = "railway_secret"
 
 socketio = SocketIO(app, async_mode="eventlet")
 
-DB_PATH = "database.db"
+# ==========================
+# DATABASE CONFIG
+# ==========================
 
-# ==============================
-# DATABASE INITIALIZATION
-# ==============================
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://")
 
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
-        application_number TEXT UNIQUE,
-        password TEXT
-    )
-    """)
+app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS profiles (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        about TEXT,
-        skills_teach TEXT,
-        skills_learn TEXT
-    )
-    """)
+db = SQLAlchemy(app)
 
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sender_id INTEGER,
-        receiver_id INTEGER,
-        message TEXT
-    )
-    """)
+# ==========================
+# MODELS
+# ==========================
 
-    conn.commit()
-    conn.close()
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100))
+    application_number = db.Column(db.String(100), unique=True)
+    password = db.Column(db.String(100))
 
-init_db()
 
-# ==============================
-# HOME
-# ==============================
+class Profile(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"))
+    about = db.Column(db.Text)
+    linkedin = db.Column(db.String(200))
+    github = db.Column(db.String(200))
+    skills_teach = db.Column(db.String(200))
+    skills_learn = db.Column(db.String(200))
+
+
+class Message(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    sender_id = db.Column(db.Integer)
+    receiver_id = db.Column(db.Integer)
+    message = db.Column(db.Text)
+
+# Create tables
+with app.app_context():
+    db.create_all()
+
+# ==========================
+# ROUTES
+# ==========================
 
 @app.route("/")
 def home():
     return redirect("/login")
 
-# ==============================
 # SIGNUP
-# ==============================
-
 @app.route("/signup", methods=["GET", "POST"])
 def signup():
     if request.method == "POST":
@@ -70,71 +69,45 @@ def signup():
         app_no = request.form.get("application_number")
         password = request.form.get("password")
 
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-
-        try:
-            c.execute(
-                "INSERT INTO users (name, application_number, password) VALUES (?, ?, ?)",
-                (name, app_no, password)
-            )
-            conn.commit()
-        except sqlite3.IntegrityError:
-            conn.close()
+        if User.query.filter_by(application_number=app_no).first():
             return "Application number already exists!"
 
-        conn.close()
+        user = User(name=name, application_number=app_no, password=password)
+        db.session.add(user)
+        db.session.commit()
+
         return redirect("/login")
 
     return render_template("signup.html")
 
-# ==============================
 # LOGIN
-# ==============================
-
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
         app_no = request.form.get("application_number")
         password = request.form.get("password")
 
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-
-        c.execute(
-            "SELECT * FROM users WHERE application_number=? AND password=?",
-            (app_no, password)
-        )
-
-        user = c.fetchone()
-        conn.close()
+        user = User.query.filter_by(
+            application_number=app_no,
+            password=password
+        ).first()
 
         if user:
-            session["user_id"] = user[0]
-            session["name"] = user[1]
+            session["user_id"] = user.id
+            session["name"] = user.name
             return redirect("/dashboard")
 
         return "Invalid credentials"
 
     return render_template("login.html")
 
-# ==============================
 # DASHBOARD
-# ==============================
-
 @app.route("/dashboard")
 def dashboard():
     if "user_id" not in session:
         return redirect("/login")
 
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    # Show all other users
-    c.execute("SELECT id, name FROM users WHERE id != ?", (session["user_id"],))
-    users = c.fetchall()
-
-    conn.close()
+    users = User.query.filter(User.id != session["user_id"]).all()
 
     return render_template(
         "dashboard.html",
@@ -142,45 +115,36 @@ def dashboard():
         users=users
     )
 
-# ==============================
 # PROFILE
-# ==============================
-
 @app.route("/profile", methods=["GET", "POST"])
 def profile():
     if "user_id" not in session:
         return redirect("/login")
 
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    profile = Profile.query.filter_by(user_id=session["user_id"]).first()
 
     if request.method == "POST":
         about = request.form.get("about")
+        linkedin = request.form.get("linkedin")
+        github = request.form.get("github")
         skills_teach = request.form.get("skills_teach")
         skills_learn = request.form.get("skills_learn")
 
-        # Remove old profile
-        c.execute("DELETE FROM profiles WHERE user_id=?", (session["user_id"],))
+        if not profile:
+            profile = Profile(user_id=session["user_id"])
 
-        # Insert new profile
-        c.execute(
-            "INSERT INTO profiles (user_id, about, skills_teach, skills_learn) VALUES (?, ?, ?, ?)",
-            (session["user_id"], about, skills_teach, skills_learn)
-        )
+        profile.about = about
+        profile.linkedin = linkedin
+        profile.github = github
+        profile.skills_teach = skills_teach
+        profile.skills_learn = skills_learn
 
-        conn.commit()
+        db.session.add(profile)
+        db.session.commit()
 
-    c.execute("SELECT * FROM profiles WHERE user_id=?", (session["user_id"],))
-    profile_data = c.fetchone()
+    return render_template("profile.html", profile=profile)
 
-    conn.close()
-
-    return render_template("profile.html", profile=profile_data)
-
-# ==============================
 # CHAT
-# ==============================
-
 @app.route("/chat/<int:receiver_id>")
 def chat(receiver_id):
     if "user_id" not in session:
@@ -188,18 +152,10 @@ def chat(receiver_id):
 
     user_id = session["user_id"]
 
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    c.execute("""
-        SELECT sender_id, message FROM messages
-        WHERE (sender_id=? AND receiver_id=?)
-        OR (sender_id=? AND receiver_id=?)
-        ORDER BY id ASC
-    """, (user_id, receiver_id, receiver_id, user_id))
-
-    messages = c.fetchall()
-    conn.close()
+    messages = Message.query.filter(
+        ((Message.sender_id == user_id) & (Message.receiver_id == receiver_id)) |
+        ((Message.sender_id == receiver_id) & (Message.receiver_id == user_id))
+    ).all()
 
     room = f"{min(user_id, receiver_id)}_{max(user_id, receiver_id)}"
 
@@ -211,47 +167,30 @@ def chat(receiver_id):
         room=room
     )
 
-# ==============================
-# SOCKET EVENTS
-# ==============================
-
 @socketio.on("join_room")
 def handle_join(data):
     join_room(data["room"])
 
 @socketio.on("send_message")
 def handle_message(data):
-    sender_id = data["sender_id"]
-    receiver_id = data["receiver_id"]
-    message = data["message"]
-    room = data["room"]
-
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    c.execute(
-        "INSERT INTO messages (sender_id, receiver_id, message) VALUES (?, ?, ?)",
-        (sender_id, receiver_id, message)
+    msg = Message(
+        sender_id=data["sender_id"],
+        receiver_id=data["receiver_id"],
+        message=data["message"]
     )
 
-    conn.commit()
-    conn.close()
+    db.session.add(msg)
+    db.session.commit()
 
-    emit("receive_message", data, room=room)
+    emit("receive_message", data, room=data["room"])
 
-# ==============================
 # LOGOUT
-# ==============================
-
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect("/login")
 
-# ==============================
-# RUN (RAILWAY READY)
-# ==============================
-
+# RUN
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     socketio.run(app, host="0.0.0.0", port=port)
